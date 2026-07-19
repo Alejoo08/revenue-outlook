@@ -17,7 +17,7 @@ authenticated against Microsoft Entra ID (Azure AD).
 ### Forecasting rule
 
 For the current year, every metric labelled *Fcst* blends **actuals for each
-month already loaded** with the **Q2 Forecast for the remaining months**. The
+month already loaded** with the **Forecast for the remaining months**. The
 cutoff month is detected from the data itself (the last month with a non-zero
 actual), so the dashboard advances automatically as new actuals land — no code
 change required.
