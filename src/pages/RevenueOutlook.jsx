@@ -93,6 +93,17 @@ const SUB_LOB_BY_LOB = {
   "Other MR": ["Other MR"],
 };
 
+/* Order a LOB's Sub-LOBs to match the canonical SUB_LOB_BY_LOB order — the same
+   order Revenue uses — so Issuance lines up with Revenue instead of sorting by
+   volume. Members not in the canonical list (Issuance-only Sub-LOBs) are
+   appended alphabetically so they keep a stable, predictable position. */
+function canonicalSubs(lob, present) {
+  const canon = SUB_LOB_BY_LOB[lob] ?? [];
+  const inCanon = canon.filter((s) => present.includes(s));
+  const extras = present.filter((s) => !canon.includes(s)).sort();
+  return [...inCanon, ...extras];
+}
+
 /* ============================================================================
    DATA WIRING
 ============================================================================ */
@@ -279,6 +290,9 @@ html, body { margin: 0; padding: 0; width: 100%; display: block; }
 .ro-kpi-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; border-top: 1px solid ${UI.lineSoft}; padding-top: 14px; }
 .ro-kpi-splits { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 8px; border-top: 1px solid ${UI.lineSoft}; padding-top: 14px; margin-top: 14px; }
 .ro-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: ${BRAND.blue10}; background: rgba(0, 94, 255, 0.07); border-radius: 999px; padding: 4px 12px; }
+.ro-clear-btn { margin-left: auto; align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; background: ${BRAND.white}; border: 1px solid ${UI.line}; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; color: ${BRAND.mediumGray}; cursor: pointer; font-family: ${FONT}; white-space: nowrap; transition: all 0.15s ease; }
+.ro-clear-btn:hover:not(:disabled) { color: ${BRAND.blue10}; border-color: ${BRAND.brightBlue}; }
+.ro-clear-btn:disabled { opacity: 0.45; cursor: default; }
 `;
 
 /* ============================================================================
@@ -325,6 +339,21 @@ function Toggle({ options, active, onChange }) {
         </button>
       ))}
     </div>
+  );
+}
+
+function ClearFiltersButton({ onClick, disabled }) {
+  return (
+    <button
+      type="button"
+      className="ro-clear-btn"
+      onClick={onClick}
+      disabled={disabled}
+      title="Reset filters to their defaults"
+    >
+      <span aria-hidden="true" style={{ fontSize: 14, lineHeight: 1 }}>×</span>
+      Clear filters
+    </button>
   );
 }
 
@@ -608,12 +637,7 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
   const issSubsByLob = useMemo(() => {
     const map = {};
     issLobs.forEach((l) => {
-      const totals = {};
-      issRows.forEach((r) => {
-        if (r.lob !== l || !r.subLob) return;
-        totals[r.subLob] = (totals[r.subLob] || 0) + r.volM;
-      });
-      map[l] = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+      map[l] = canonicalSubs(l, uniq(issRows.filter((r) => r.lob === l).map((r) => r.subLob)));
     });
     return map;
   }, [issRows, issLobs]);
@@ -722,6 +746,14 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
     };
   }, [issFiltered, issRows, volCutoff]);
 
+  const filtersActive = region !== "All" || quarter !== "All" || billType !== "All" || jv !== "All";
+  const clearFilters = () => {
+    setRegion("All");
+    setQuarter("All");
+    setBillType("All");
+    setJv("All");
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div className="ro-filters">
@@ -729,6 +761,7 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
         <Select label="Quarter" value={quarter} onChange={setQuarter} options={["All", ...QUARTERS]} />
         <Select label="Bill type" value={billType} onChange={setBillType} options={["All", ...BILL_TYPES]} />
         <Select label="Is JV" value={jv} onChange={setJv} options={["All", ...IS_JV]} />
+        <ClearFiltersButton onClick={clearFilters} disabled={!filtersActive} />
       </div>
 
       <div className="ro-summary-layout">
@@ -976,6 +1009,16 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
       .filter((g) => g.fcst || g.py || g.bud);
   }, [baseFiltered, lob, lobs, subsForLob, yearNum, measure, cutoff]);
 
+  const filtersActive =
+    region !== "All" ||
+    quarter !== "All" ||
+    Object.values(extra).some((v) => v !== "All");
+  const clearFilters = () => {
+    setRegion("All");
+    setQuarter("All");
+    setExtra(Object.fromEntries(extraFilters.map((f) => [f.key, "All"])));
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div className="ro-filters">
@@ -995,6 +1038,7 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
         {measures.length > 1 && (
           <Select label="Measure" value={measureName} onChange={setMeasureName} options={measures.map((m) => m.name)} />
         )}
+        <ClearFiltersButton onClick={clearFilters} disabled={!filtersActive} />
       </div>
 
       <Panel
@@ -1347,6 +1391,12 @@ function OutlookTableTab({ revRows, issRows, revCutoff, issCutoffs, issLobs, iss
     <span className="ro-chip">Year to date: {cutoff > 0 ? MONTHS[cutoff - 1] : "—"}</span>
   );
 
+  const filtersActive = region !== "All" || monthSel !== "Auto";
+  const clearFilters = () => {
+    setRegion("All");
+    setMonthSel("Auto");
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div className="ro-filters">
@@ -1354,6 +1404,7 @@ function OutlookTableTab({ revRows, issRows, revCutoff, issCutoffs, issLobs, iss
         <Select label="Year" value={year} onChange={setYear} options={YEARS.map(String)} />
         <Select label="Scenario" value={scenario} onChange={setScenario} options={["Fcst", "Bud"]} />
         <Select label="YTD month" value={monthSel} onChange={setMonthSel} options={["Auto", ...MONTHS]} />
+        <ClearFiltersButton onClick={clearFilters} disabled={!filtersActive} />
       </div>
 
       <div className="ro-model-grid">
@@ -1474,11 +1525,18 @@ function PerformanceTab({ revRows, issRows, revCutoff, issCutoffs }) {
     bud: sumBy(regionData, (d) => d.bud),
   };
 
+  const filtersActive = lob !== "All" || quarter !== "All";
+  const clearFilters = () => {
+    setLob("All");
+    setQuarter("All");
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div className="ro-filters">
         <Select label="LOB" value={lob} onChange={setLob} options={["All", ...LOB_ORDER]} />
         <Select label="Quarter" value={quarter} onChange={setQuarter} options={["All", ...QUARTERS]} />
+        <ClearFiltersButton onClick={clearFilters} disabled={!filtersActive} />
       </div>
 
       <Panel
@@ -1546,12 +1604,7 @@ export default function RevenueOutlook() {
   const issSubsByLob = useMemo(() => {
     const map = {};
     issLobs.forEach((l) => {
-      const totals = {};
-      iss.rows.forEach((r) => {
-        if (r.lob !== l || !r.subLob) return;
-        totals[r.subLob] = (totals[r.subLob] || 0) + r.volM;
-      });
-      map[l] = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+      map[l] = canonicalSubs(l, uniq(iss.rows.filter((r) => r.lob === l).map((r) => r.subLob)));
     });
     return map;
   }, [iss.rows, issLobs]);
