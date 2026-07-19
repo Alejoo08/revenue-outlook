@@ -1689,9 +1689,9 @@ export default function RevenueOutlook() {
 
       <header style={{ background: BRAND.white, borderBottom: `1px solid ${UI.line}` }}>
         <div className="ro-container">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24, padding: "20px 0 6px" }}>
-            <img src="/moodylogo2.png" alt="Moody's" style={{ height: 32, width: "auto" }} />
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", color: BRAND.blue10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24, padding: "24px 0 8px" }}>
+            <img src="/moodylogo2.png" alt="Moody's" style={{ height: 44, width: "auto" }} />
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em", color: BRAND.blue10 }}>
               Revenue Outlook
             </h1>
           </div>
