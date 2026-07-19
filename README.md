@@ -1,6 +1,6 @@
-# PPIF Forecast Web App
+# Revenue Outlook
 
-React app that reads issuance data from Microsoft Fabric via GraphQL API and calculates moving average forecasts by Sub-LOB.
+React app that reads revenue/issuance data from Microsoft Fabric via GraphQL API.
 
 ## Setup
 
