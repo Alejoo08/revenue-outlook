@@ -32,7 +32,6 @@ import {
   BarChart, Bar,
   ComposedChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList,
-  ReferenceLine, Cell,
 } from "recharts";
 import { useQuery } from "@apollo/client";
 import { GET_REVENUE_DATA, GET_ISSUANCE_DATA } from "../graphql/queries.js";
@@ -71,6 +70,16 @@ const LOB_COLORS = {
   PPIF: "#4A9EA8",
   SFG: "#8FBC5A",
   "Other MR": "#75787B",
+};
+
+/* Years are an ordered dimension, so they read as a light→dark ramp rather than
+   unrelated hues. Steps are spaced for colour-vision-deficient separation
+   (worst adjacent pair ΔE 13.0 CVD / 15.3 normal). */
+const YEAR_COLORS = {
+  2023: "#5BC2C9",
+  2024: "#3D8AC7",
+  2025: "#005EFF",
+  2026: "#0A1264",
 };
 
 /* ============================================================================
@@ -192,7 +201,6 @@ function lastActualMonth(rows, getActual) {
 
 const fmtInt = (n) => Math.round(n).toLocaleString("en-US");
 const fmtPct = (n) => `${n.toFixed(0)}%`;
-const fmtSigned = (n) => `${n > 0 ? "+" : ""}${fmtInt(n)}`;
 const pctChange = (a, b) => (b ? ((a - b) / b) * 100 : 0);
 const sumBy = (arr, f) => arr.reduce((s, r) => s + (f(r) || 0), 0);
 
@@ -235,6 +243,14 @@ function blendedValue(r, yearNum, measure, cutoffMonth) {
     return r.monthNo <= cutoffMonth ? measure.act(r) : (measure.fcst(r) ?? 0);
   }
   return measure.act(r);
+}
+
+/* Budget for a row in a given display year. A closed year has no open plan —
+   its budget and forecast are the actuals — so only CURRENT_YEAR reads the
+   stored budget column. */
+function budgetValue(r, yearNum, measure) {
+  if (r.year !== yearNum) return 0;
+  return yearNum < CURRENT_YEAR ? measure.act(r) : measure.bud(r);
 }
 
 function varColor(v) {
@@ -290,6 +306,11 @@ html, body { margin: 0; padding: 0; width: 100%; display: block; }
 .ro-kpi-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; border-top: 1px solid ${UI.lineSoft}; padding-top: 14px; }
 .ro-kpi-splits { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 8px; border-top: 1px solid ${UI.lineSoft}; padding-top: 14px; margin-top: 14px; }
 .ro-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: ${BRAND.blue10}; background: rgba(0, 94, 255, 0.07); border-radius: 999px; padding: 4px 12px; }
+.ro-facets { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
+.ro-facet { border: 1px solid ${UI.line}; border-radius: 10px; padding: 12px 12px 8px; background: ${BRAND.white}; }
+.ro-facet-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.ro-facet-title { font-size: 12px; font-weight: 600; color: ${BRAND.blue10}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ro-facet-total { font-size: 11px; color: ${BRAND.mediumGray}; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ro-clear-btn { margin-left: auto; align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; background: ${BRAND.white}; border: 1px solid ${UI.line}; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; color: ${BRAND.mediumGray}; cursor: pointer; font-family: ${FONT}; white-space: nowrap; transition: all 0.15s ease; }
 .ro-clear-btn:hover:not(:disabled) { color: ${BRAND.blue10}; border-color: ${BRAND.brightBlue}; }
 .ro-clear-btn:disabled { opacity: 0.45; cursor: default; }
@@ -850,88 +871,90 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
 }
 
 /* ============================================================================
-   VARIANCE PANEL — horizontal diverging bars per Sub-LOB (replaces heatmaps)
+   QUARTERLY YEAR-ON-YEAR PANEL — small multiples, one facet per Sub-LOB
+   (per LOB when the LOB filter is "All"). Each facet plots Q1–Q4 with one bar
+   per year, so seasonality and the year-on-year step are read in one place.
+   Facets carry independent y-scales: Sub-LOB magnitudes differ by orders, and
+   a shared scale would flatten the smaller ones into unreadable slivers. The
+   facet header states the current-year total so relative size stays visible.
 ============================================================================ */
 
-function VariancePanel({ title, items, measure }) {
-  const [mode, setMode] = useState("vs PY");
+function QuarterlyYoYPanel({ title, facets, measure }) {
+  const [sort, setSort] = useState("Size");
 
-  const data = useMemo(() => {
-    return items
-      .map((it) => {
-        const base = mode === "vs PY" ? it.py : it.bud;
-        const delta = measure.toDisplay(it.fcst - base);
-        const pct = pctChange(it.fcst, base);
-        return {
-          label: it.label,
-          delta,
-          labelText: `${fmtSigned(delta)} (${pct > 0 ? "+" : ""}${pct.toFixed(0)}%)`,
-        };
-      })
-      .filter((d) => d.delta !== 0 || items.length <= 2)
-      .sort((a, b) => b.delta - a.delta);
-  }, [items, mode, measure]);
+  const ordered = useMemo(() => {
+    const list = [...facets];
+    return sort === "Name"
+      ? list.sort((a, b) => a.label.localeCompare(b.label))
+      : list.sort((a, b) => Math.abs(b.currentYearTotal) - Math.abs(a.currentYearTotal));
+  }, [facets, sort]);
 
-  const divergingLabel = (props) => {
-    const { x, y, width, height, index } = props;
-    const d = data[index];
-    if (!d) return null;
-    const positive = d.delta >= 0;
-    /* Anchor to the bar's outer edge regardless of how the renderer
-       reports x/width for negative values. */
-    const leftEdge = Math.min(x, x + width);
-    const rightEdge = Math.max(x, x + width);
-    return (
-      <text
-        x={positive ? rightEdge + 8 : leftEdge - 8}
-        y={y + height / 2}
-        textAnchor={positive ? "start" : "end"}
-        dominantBaseline="central"
-        style={{ fill: positive ? BRAND.low : BRAND.critical, fontSize: 12, fontWeight: 600, fontFamily: FONT }}
-      >
-        {d.labelText}
-      </text>
-    );
-  };
+  const yearLabel = (y) => (y === CURRENT_YEAR ? `${y} Fcst` : String(y));
 
   return (
     <Panel
       title={title}
-      action={<Toggle options={["vs PY", "vs Bud"]} active={mode} onChange={setMode} />}
+      action={<Toggle options={["Size", "Name"]} active={sort} onChange={setSort} />}
     >
-      {data.length === 0 ? (
+      {ordered.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: BRAND.mediumGray, fontSize: 13 }}>
-          No variance to display for the current selection.
+          No data to display for the current selection.
         </div>
       ) : (
-        <div style={{ width: "100%", height: Math.max(160, data.length * 42 + 40) }}>
-          <ResponsiveContainer>
-            <BarChart data={data} layout="vertical" margin={{ top: 8, right: 110, left: 16, bottom: 8 }}>
-              <XAxis type="number" hide />
-              <YAxis
-                type="category"
-                dataKey="label"
-                width={150}
-                stroke={BRAND.darkGray}
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-              />
-              <ReferenceLine x={0} stroke={UI.line} />
-              <Tooltip
-                contentStyle={tooltipStyle}
-                formatter={(v) => [`${fmtSigned(v)} ${measure.unit}`, `Fcst ${mode}`]}
-                cursor={{ fill: "rgba(0, 0, 0, 0.03)" }}
-              />
-              <Bar dataKey="delta" barSize={16} radius={[0, 4, 4, 0]}>
-                {data.map((d) => (
-                  <Cell key={d.label} fill={d.delta >= 0 ? BRAND.low : BRAND.critical} />
-                ))}
-                <LabelList content={divergingLabel} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16 }}>
+            {YEARS.map((y) => (
+              <span key={y} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: BRAND.darkGray }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: YEAR_COLORS[y], display: "inline-block" }} />
+                {yearLabel(y)}
+              </span>
+            ))}
+          </div>
+
+          <div className="ro-facets">
+            {ordered.map((f) => (
+              <div key={f.label} className="ro-facet">
+                <div className="ro-facet-head">
+                  <span className="ro-facet-title">{f.label}</span>
+                  <span className="ro-facet-total">
+                    {measure.fmt(f.currentYearTotal)} {measure.unit} · {CURRENT_YEAR}
+                  </span>
+                </div>
+                <div style={{ width: "100%", height: 168 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={f.data} margin={{ top: 6, right: 4, left: 0, bottom: 0 }} barGap={2} barCategoryGap="22%">
+                      <CartesianGrid stroke={UI.lineSoft} vertical={false} />
+                      <XAxis dataKey="quarter" stroke={BRAND.mediumGray} fontSize={11} tickLine={false} axisLine={{ stroke: UI.line }} />
+                      <YAxis
+                        width={40}
+                        stroke={BRAND.mediumGray}
+                        fontSize={10}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(v) => Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      />
+                      <Tooltip
+                        contentStyle={tooltipStyle}
+                        cursor={{ fill: "rgba(0, 0, 0, 0.03)" }}
+                        formatter={(v, n) => [`${Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 })} ${measure.unit}`, n]}
+                      />
+                      {YEARS.map((y) => (
+                        <Bar
+                          key={y}
+                          dataKey={String(y)}
+                          name={yearLabel(y)}
+                          fill={YEAR_COLORS[y]}
+                          radius={[3, 3, 0, 0]}
+                          maxBarSize={18}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </Panel>
   );
@@ -994,7 +1017,7 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
     lobFiltered.forEach((r) => {
       const i = idx(r);
       out[i].fcst += fcstMetric(r);
-      if (r.year === yearNum) out[i].budget += measure.bud(r);
+      out[i].budget += budgetValue(r, yearNum, measure);
       if (r.year === yearNum - 1) out[i].py += measure.act(r);
     });
     return out.map((d) => ({
@@ -1034,23 +1057,33 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
     return result;
   }, [baseFiltered, lob, lobs, subsForLob, yearNum, measure, cutoff, expanded]);
 
-  /* ── Variance items (per Sub-LOB, or per LOB when "All") ───────── */
-  const varianceItems = useMemo(() => {
+  /* ── Quarterly year-on-year facets (per Sub-LOB, or per LOB when "All") ── */
+  const quarterFacets = useMemo(() => {
     const groups = lob === "All"
       ? lobs.map((l) => ({ label: l, match: (r) => r.lob === l }))
       : subsForLob(lob).map((s) => ({ label: s, match: (r) => r.lob === lob && r.subLob === s }));
+
     return groups
       .map((g) => {
-        const subset = baseFiltered.filter(g.match);
-        return {
-          label: g.label,
-          fcst: sumBy(subset, fcstMetric),
-          py: sumBy(subset, (r) => (r.year === yearNum - 1 ? measure.act(r) : 0)),
-          bud: sumBy(subset, (r) => (r.year === yearNum ? measure.bud(r) : 0)),
-        };
+        const blank = () => Object.fromEntries(YEARS.map((y) => [String(y), 0]));
+        const raw = QUARTERS.map((q) => ({ quarter: q, ...blank() }));
+        baseFiltered.forEach((r) => {
+          if (!YEARS.includes(r.year) || !g.match(r)) return;
+          raw[Number(r.quarter[1]) - 1][String(r.year)] += blendedValue(r, r.year, measure, cutoff);
+        });
+        /* measure.fmt expects raw units, so the facet total is taken before
+           the per-bar toDisplay conversion. */
+        const currentYearTotal = sumBy(raw, (d) => d[String(CURRENT_YEAR)]);
+        const magnitude = sumBy(raw, (d) => sumBy(YEARS, (y) => Math.abs(d[String(y)])));
+        const data = raw.map((d) => {
+          const out = { quarter: d.quarter };
+          YEARS.forEach((y) => { out[String(y)] = measure.toDisplay(d[String(y)]); });
+          return out;
+        });
+        return { label: g.label, data, currentYearTotal, magnitude };
       })
-      .filter((g) => g.fcst || g.py || g.bud);
-  }, [baseFiltered, lob, lobs, subsForLob, yearNum, measure, cutoff]);
+      .filter((f) => f.magnitude > 0);
+  }, [baseFiltered, lob, lobs, subsForLob, measure, cutoff]);
 
   const filtersActive =
     region !== "All" ||
@@ -1168,9 +1201,9 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
         </div>
       </Panel>
 
-      <VariancePanel
-        title={`Variance drivers — ${lob === "All" ? "by LOB" : `${lob} by Sub-LOB`} (${measure.unit})`}
-        items={varianceItems}
+      <QuarterlyYoYPanel
+        title={`Quarterly performance by year — ${lob === "All" ? "by LOB" : `${lob} by Sub-LOB`} (${measure.unit})`}
+        facets={quarterFacets}
         measure={measure}
       />
     </div>
