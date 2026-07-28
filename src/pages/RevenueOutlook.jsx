@@ -436,7 +436,7 @@ function KpiCard({ title, value, stats, splits }) {
    STACKED LOB CHART — shared by revenue ($M) and issuance ($B)
 ============================================================================ */
 
-function StackedLobChart({ data, lobs }) {
+function StackedLobChart({ data, lobs, selectedLob, onSelectLob }) {
   const segmentLabel = (lobName) => (props) => {
     const { x, y, width, height, value } = props;
     if (lobName === "Other MR") return null;
@@ -471,9 +471,23 @@ function StackedLobChart({ data, lobs }) {
             formatter={(v, n) => [Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 }), n]}
             cursor={{ fill: "rgba(0, 0, 0, 0.03)" }}
           />
-          <Legend wrapperStyle={{ fontSize: 12, fontFamily: FONT }} iconType="circle" iconSize={8} />
+          <Legend
+            wrapperStyle={{ fontSize: 12, fontFamily: FONT, cursor: onSelectLob ? "pointer" : "default" }}
+            iconType="circle"
+            iconSize={8}
+            onClick={onSelectLob ? (e) => onSelectLob(e.dataKey ?? e.value) : undefined}
+          />
           {lobs.map((l, i) => (
-            <Bar key={l} dataKey={l} name={l} stackId="stack" fill={LOB_COLORS[l]}>
+            <Bar
+              key={l}
+              dataKey={l}
+              name={l}
+              stackId="stack"
+              fill={LOB_COLORS[l]}
+              fillOpacity={selectedLob && selectedLob !== l ? 0.25 : 1}
+              cursor={onSelectLob ? "pointer" : undefined}
+              onClick={onSelectLob ? () => onSelectLob(l) : undefined}
+            >
               <LabelList dataKey={l} content={segmentLabel(l)} />
               {i === lobs.length - 1 && (
                 <LabelList
@@ -492,13 +506,15 @@ function StackedLobChart({ data, lobs }) {
 }
 
 /* ============================================================================
-   SUMMARY VARIANCE TABLE — Fcst | PY | Δ | Δ% | Bud | Bud vs PY %
+   SUMMARY VARIANCE TABLE
+   PY | Fcst | Bud | Fcst vs PY | Bud vs PY | Fcst vs PY % | Bud vs PY %
 ============================================================================ */
 
 function SummaryVarianceTable({ labelHeader, rows, total, fmt, expanded, onToggle }) {
   const renderRow = (r, isTotal) => {
     const isLob = r.level === "lob";
     const fcstVsPy = r.fcst - r.py;
+    const budVsPy = r.bud - r.py;
     const fcstVsPyPct = pctChange(r.fcst, r.py);
     const budVsPyPct = pctChange(r.bud, r.py);
     return (
@@ -531,14 +547,15 @@ function SummaryVarianceTable({ labelHeader, rows, total, fmt, expanded, onToggl
           )}
           {r.label}
         </td>
-        <td style={{ ...tdNum, fontSize: 13 }}>{fmt(r.fcst)}</td>
         <td style={{ ...tdNum, fontSize: 13 }}>{fmt(r.py)}</td>
+        <td style={{ ...tdNum, fontSize: 13 }}>{fmt(r.fcst)}</td>
+        <td style={{ ...tdNum, fontSize: 13 }}>{fmt(r.bud)}</td>
         <td style={{ ...tdNum, fontSize: 13, fontWeight: 500, color: isTotal ? BRAND.blue10 : varColor(fcstVsPy) }}>{fmt(fcstVsPy)}</td>
+        <td style={{ ...tdNum, fontSize: 13, fontWeight: 500, color: isTotal ? BRAND.blue10 : varColor(budVsPy) }}>{fmt(budVsPy)}</td>
         <td style={{ ...tdNum, fontSize: 13, fontWeight: 600, color: isTotal ? BRAND.blue10 : varColor(fcstVsPyPct), background: isTotal ? "transparent" : varBg(fcstVsPyPct) }}>
           {!isTotal && <span style={{ fontSize: 8, marginRight: 4 }}>{varArrow(fcstVsPyPct)}</span>}
           {fmtPct(fcstVsPyPct)}
         </td>
-        <td style={{ ...tdNum, fontSize: 13 }}>{fmt(r.bud)}</td>
         <td style={{ ...tdNum, fontSize: 13, fontWeight: 600, color: isTotal ? BRAND.blue10 : varColor(budVsPyPct), background: isTotal ? "transparent" : varBg(budVsPyPct) }}>
           {!isTotal && <span style={{ fontSize: 8, marginRight: 4 }}>{varArrow(budVsPyPct)}</span>}
           {fmtPct(budVsPyPct)}
@@ -549,15 +566,16 @@ function SummaryVarianceTable({ labelHeader, rows, total, fmt, expanded, onToggl
 
   return (
     <div className="ro-scroll-x">
-      <table className="ro-table" style={{ minWidth: 680 }}>
+      <table className="ro-table" style={{ minWidth: 780 }}>
         <thead>
           <tr>
             <th style={{ ...thMin, textAlign: "left" }}>{labelHeader}</th>
-            <th style={thMin}>Fcst</th>
             <th style={thMin}>PY</th>
-            <th style={thMin}>Fcst vs PY</th>
-            <th style={thMin}>Fcst vs PY %</th>
+            <th style={thMin}>Fcst</th>
             <th style={thMin}>Bud</th>
+            <th style={thMin}>Fcst vs PY</th>
+            <th style={thMin}>Bud vs PY</th>
+            <th style={thMin}>Fcst vs PY %</th>
             <th style={thMin}>Bud vs PY %</th>
           </tr>
         </thead>
@@ -600,8 +618,10 @@ function buildSummaryRows({ rows, lobs, subsForLob, measure, cutoffMonth, expand
 function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
   const [region, setRegion] = useState("All");
   const [quarter, setQuarter] = useState("All");
+  const [month, setMonth] = useState("All");
   const [billType, setBillType] = useState("All");
   const [jv, setJv] = useState("All");
+  const [lobSel, setLobSel] = useState(null);
   const [revExpanded, setRevExpanded] = useState({});
   const [issExpanded, setIssExpanded] = useState({});
   const [issMeasureName, setIssMeasureName] = useState(ISS_MEASURES[0].name);
@@ -610,23 +630,38 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
   const issCutoff = issCutoffs[issMeasureName] ?? 0;
   const volMeasure = ISS_MEASURES[0];
   const volCutoff = issCutoffs[volMeasure.name] ?? 0;
+  const monthNo = month === "All" ? null : MONTHS.indexOf(month) + 1;
 
   const revFiltered = useMemo(
     () => revRows.filter((r) =>
       (region === "All" || r.region === region) &&
       (quarter === "All" || r.quarter === quarter) &&
+      (monthNo == null || r.monthNo === monthNo) &&
       (billType === "All" || r.transRecurring === billType) &&
       (jv === "All" || r.isJV === jv)
     ),
-    [revRows, region, quarter, billType, jv]
+    [revRows, region, quarter, monthNo, billType, jv]
   );
 
   const issFiltered = useMemo(
     () => issRows.filter((r) =>
       (region === "All" || r.region === region) &&
-      (quarter === "All" || r.quarter === quarter)
+      (quarter === "All" || r.quarter === quarter) &&
+      (monthNo == null || r.monthNo === monthNo)
     ),
-    [issRows, region, quarter]
+    [issRows, region, quarter, monthNo]
+  );
+
+  /* Charts stay on revFiltered/issFiltered so every LOB remains visible and
+     clickable; the LOB picked on a chart cross-filters the KPI rail and the
+     summary tables only. */
+  const revScoped = useMemo(
+    () => (lobSel ? revFiltered.filter((r) => r.lob === lobSel) : revFiltered),
+    [revFiltered, lobSel]
+  );
+  const issScoped = useMemo(
+    () => (lobSel ? issFiltered.filter((r) => r.lob === lobSel) : issFiltered),
+    [issFiltered, lobSel]
   );
 
   const issLobs = useMemo(
@@ -675,19 +710,19 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
   /* ── Summary tables ─────────────────────────────────────────────── */
   const revTableRows = useMemo(
     () => buildSummaryRows({
-      rows: revFiltered, lobs: LOB_ORDER,
+      rows: revScoped, lobs: lobSel ? [lobSel] : LOB_ORDER,
       subsForLob: (l) => SUB_LOB_BY_LOB[l] ?? [],
       measure: REV_MEASURE, cutoffMonth: revCutoff, expanded: revExpanded,
     }),
-    [revFiltered, revCutoff, revExpanded]
+    [revScoped, lobSel, revCutoff, revExpanded]
   );
   const issTableRows = useMemo(
     () => buildSummaryRows({
-      rows: issFiltered, lobs: issLobs,
+      rows: issScoped, lobs: lobSel ? [lobSel] : issLobs,
       subsForLob: (l) => issSubsByLob[l] ?? [],
       measure: issMeasure, cutoffMonth: issCutoff, expanded: issExpanded,
     }),
-    [issFiltered, issLobs, issSubsByLob, issMeasure, issCutoff, issExpanded]
+    [issScoped, lobSel, issLobs, issSubsByLob, issMeasure, issCutoff, issExpanded]
   );
 
   const tableTotal = (rows, label) => ({
@@ -699,19 +734,19 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
 
   /* ── KPI cards ──────────────────────────────────────────────────── */
   const revKpis = useMemo(() => {
-    const fcst = sumBy(revFiltered, (r) => blendedValue(r, CURRENT_YEAR, REV_MEASURE, revCutoff));
-    const py = sumBy(revFiltered, (r) => (r.year === CURRENT_YEAR - 1 ? r.usdAmount : 0));
-    const bud = sumBy(revFiltered, (r) => (r.year === CURRENT_YEAR ? r.usdBudgetBR : 0));
-    const act3y = sumBy(revFiltered, (r) => (r.year === CURRENT_YEAR - 3 ? r.usdAmount : 0));
+    const fcst = sumBy(revScoped, (r) => blendedValue(r, CURRENT_YEAR, REV_MEASURE, revCutoff));
+    const py = sumBy(revScoped, (r) => (r.year === CURRENT_YEAR - 1 ? r.usdAmount : 0));
+    const bud = sumBy(revScoped, (r) => (r.year === CURRENT_YEAR ? r.usdBudgetBR : 0));
+    const act3y = sumBy(revScoped, (r) => (r.year === CURRENT_YEAR - 3 ? r.usdAmount : 0));
     const cagr = act3y > 0 && fcst > 0 ? (Math.pow(fcst / act3y, 1 / 3) - 1) * 100 : 0;
     const splits = BILL_TYPES.map((bt) => {
-      const f = sumBy(revFiltered.filter((r) => r.transRecurring === bt), (r) => blendedValue(r, CURRENT_YEAR, REV_MEASURE, revCutoff));
-      const p = sumBy(revFiltered.filter((r) => r.transRecurring === bt), (r) => (r.year === CURRENT_YEAR - 1 ? r.usdAmount : 0));
+      const f = sumBy(revScoped.filter((r) => r.transRecurring === bt), (r) => blendedValue(r, CURRENT_YEAR, REV_MEASURE, revCutoff));
+      const p = sumBy(revScoped.filter((r) => r.transRecurring === bt), (r) => (r.year === CURRENT_YEAR - 1 ? r.usdAmount : 0));
       const d = pctChange(f, p);
       return { label: bt, value: fmtInt(f / 1e6), sub: `${fmtPct(d)} vs PY`, subRaw: d };
     });
     return {
-      value: `${fmtInt(fcst / 1e6)}M`,
+      value: fmtInt(fcst / 1e6),
       stats: [
         { value: fmtPct(pctChange(fcst, py)), label: "Fcst. Growth" },
         { value: fmtPct(pctChange(bud, py)), label: "Bud. Growth" },
@@ -719,24 +754,24 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
       ],
       splits,
     };
-  }, [revFiltered, revCutoff]);
+  }, [revScoped, revCutoff]);
 
   const issKpis = useMemo(() => {
     const m = volMeasure;
-    const fcst = sumBy(issFiltered, (r) => blendedValue(r, CURRENT_YEAR, m, volCutoff));
-    const py = sumBy(issFiltered, (r) => (r.year === CURRENT_YEAR - 1 ? m.act(r) : 0));
-    const bud = sumBy(issFiltered, (r) => (r.year === CURRENT_YEAR ? m.bud(r) : 0));
-    const act3y = sumBy(issFiltered, (r) => (r.year === CURRENT_YEAR - 3 ? m.act(r) : 0));
+    const fcst = sumBy(issScoped, (r) => blendedValue(r, CURRENT_YEAR, m, volCutoff));
+    const py = sumBy(issScoped, (r) => (r.year === CURRENT_YEAR - 1 ? m.act(r) : 0));
+    const bud = sumBy(issScoped, (r) => (r.year === CURRENT_YEAR ? m.bud(r) : 0));
+    const act3y = sumBy(issScoped, (r) => (r.year === CURRENT_YEAR - 3 ? m.act(r) : 0));
     const cagr = act3y > 0 && fcst > 0 ? (Math.pow(fcst / act3y, 1 / 3) - 1) * 100 : 0;
     const constructs = uniq(issRows.map((r) => r.pricing)).filter((pc) => pc !== "SFG").slice(0, 3);
     const splits = constructs.map((pc) => {
-      const f = sumBy(issFiltered.filter((r) => r.pricing === pc), (r) => blendedValue(r, CURRENT_YEAR, m, volCutoff));
-      const p = sumBy(issFiltered.filter((r) => r.pricing === pc), (r) => (r.year === CURRENT_YEAR - 1 ? m.act(r) : 0));
+      const f = sumBy(issScoped.filter((r) => r.pricing === pc), (r) => blendedValue(r, CURRENT_YEAR, m, volCutoff));
+      const p = sumBy(issScoped.filter((r) => r.pricing === pc), (r) => (r.year === CURRENT_YEAR - 1 ? m.act(r) : 0));
       const d = pctChange(f, p);
       return { label: pc, value: fmtInt(f / 1000), sub: `${fmtPct(d)} vs PY`, subRaw: d };
     });
     return {
-      value: `${fmtInt(fcst / 1000)}bn`,
+      value: fmtInt(fcst / 1000),
       stats: [
         { value: fmtPct(pctChange(fcst, py)), label: "Fcst. Growth" },
         { value: fmtPct(pctChange(bud, py)), label: "Bud. Growth" },
@@ -744,21 +779,29 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
       ],
       splits,
     };
-  }, [issFiltered, issRows, volCutoff]);
+  }, [issScoped, issRows, volCutoff]);
 
-  const filtersActive = region !== "All" || quarter !== "All" || billType !== "All" || jv !== "All";
+  const filtersActive =
+    region !== "All" || quarter !== "All" || month !== "All" ||
+    billType !== "All" || jv !== "All" || lobSel !== null;
   const clearFilters = () => {
     setRegion("All");
     setQuarter("All");
+    setMonth("All");
     setBillType("All");
     setJv("All");
+    setLobSel(null);
   };
+
+  /* Clicking the LOB already selected clears the cross-filter. */
+  const toggleLob = (l) => setLobSel((cur) => (cur === l ? null : l));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div className="ro-filters">
         <Select label="Region" value={region} onChange={setRegion} options={["All", ...REGION_ORDER]} />
         <Select label="Quarter" value={quarter} onChange={setQuarter} options={["All", ...QUARTERS]} />
+        <Select label="Month" value={month} onChange={setMonth} options={["All", ...MONTHS]} />
         <Select label="Bill type" value={billType} onChange={setBillType} options={["All", ...BILL_TYPES]} />
         <Select label="Is JV" value={jv} onChange={setJv} options={["All", ...IS_JV]} />
         <ClearFiltersButton onClick={clearFilters} disabled={!filtersActive} />
@@ -766,16 +809,16 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
 
       <div className="ro-summary-layout">
         <div className="ro-side">
-          <KpiCard title="Revenue ($M)" value={revKpis.value} stats={revKpis.stats} splits={revKpis.splits} />
-          <KpiCard title="Issuance ($B)" value={issKpis.value} stats={issKpis.stats} splits={issKpis.splits} />
+          <KpiCard title={`Revenue ($M)${lobSel ? ` — ${lobSel}` : ""}`} value={revKpis.value} stats={revKpis.stats} splits={revKpis.splits} />
+          <KpiCard title={`Issuance ($B)${lobSel ? ` — ${lobSel}` : ""}`} value={issKpis.value} stats={issKpis.stats} splits={issKpis.splits} />
         </div>
 
         <div className="ro-summary-main">
           <Panel title="Ratings revenue ($M)">
-            <StackedLobChart data={revStacked} lobs={LOB_ORDER} />
+            <StackedLobChart data={revStacked} lobs={LOB_ORDER} selectedLob={lobSel} onSelectLob={toggleLob} />
           </Panel>
           <Panel title="Ratings issuance ($B)">
-            <StackedLobChart data={issStacked} lobs={issLobs} />
+            <StackedLobChart data={issStacked} lobs={issLobs} selectedLob={lobSel} onSelectLob={toggleLob} />
           </Panel>
           <Panel title="Revenue summary">
             <SummaryVarianceTable
