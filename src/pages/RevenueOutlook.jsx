@@ -32,6 +32,7 @@ import {
   BarChart, Bar,
   ComposedChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, LabelList,
+  Cell,
 } from "recharts";
 import { useQuery } from "@apollo/client";
 import { GET_REVENUE_DATA, GET_ISSUANCE_DATA } from "../graphql/queries.js";
@@ -877,26 +878,15 @@ function SummaryTab({ revRows, issRows, revCutoff, issCutoffs }) {
    Facets carry independent y-scales: Sub-LOB magnitudes differ by orders, and
    a shared scale would flatten the smaller ones into unreadable slivers. The
    facet header states the current-year total so relative size stays visible.
+   Facets follow the canonical Sub-LOB order, never a data-driven ranking.
 ============================================================================ */
 
 function QuarterlyYoYPanel({ title, facets, measure }) {
-  const [sort, setSort] = useState("Size");
-
-  const ordered = useMemo(() => {
-    const list = [...facets];
-    return sort === "Name"
-      ? list.sort((a, b) => a.label.localeCompare(b.label))
-      : list.sort((a, b) => Math.abs(b.currentYearTotal) - Math.abs(a.currentYearTotal));
-  }, [facets, sort]);
-
   const yearLabel = (y) => (y === CURRENT_YEAR ? `${y} Fcst` : String(y));
 
   return (
-    <Panel
-      title={title}
-      action={<Toggle options={["Size", "Name"]} active={sort} onChange={setSort} />}
-    >
-      {ordered.length === 0 ? (
+    <Panel title={title}>
+      {facets.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: BRAND.mediumGray, fontSize: 13 }}>
           No data to display for the current selection.
         </div>
@@ -912,7 +902,7 @@ function QuarterlyYoYPanel({ title, facets, measure }) {
           </div>
 
           <div className="ro-facets">
-            {ordered.map((f) => (
+            {facets.map((f) => (
               <div key={f.label} className="ro-facet">
                 <div className="ro-facet-head">
                   <span className="ro-facet-title">{f.label}</span>
@@ -976,10 +966,24 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
   const [granularity, setGranularity] = useState("Monthly");
   const [measureName, setMeasureName] = useState(measures[0].name);
   const [expanded, setExpanded] = useState(() => (lobs[0] ? { [lobs[0]]: true } : {}));
+  const [periodSel, setPeriodSel] = useState(null);
 
   const measure = measures.find((m) => m.name === measureName) ?? measures[0];
   const cutoff = cutoffs[measure.name] ?? 0;
   const yearNum = Number(year);
+
+  /* Month columns covered by the period picked on the chart. A quarter spans
+     three columns; the table is always monthly regardless of granularity. */
+  const selectedMonths = useMemo(() => {
+    if (!periodSel) return null;
+    const m = MONTHS.indexOf(periodSel);
+    if (m >= 0) return new Set([m]);
+    const q = QUARTERS.indexOf(periodSel);
+    return q < 0 ? null : new Set([q * 3, q * 3 + 1, q * 3 + 2]);
+  }, [periodSel]);
+
+  const togglePeriod = (p) => setPeriodSel((cur) => (cur === p ? null : p));
+  const changeGranularity = (g) => { setGranularity(g); setPeriodSel(null); };
 
   const extraOptions = useMemo(() => {
     const map = {};
@@ -1088,12 +1092,22 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
   const filtersActive =
     region !== "All" ||
     quarter !== "All" ||
+    periodSel !== null ||
     Object.values(extra).some((v) => v !== "All");
   const clearFilters = () => {
     setRegion("All");
     setQuarter("All");
+    setPeriodSel(null);
     setExtra(Object.fromEntries(extraFilters.map((f) => [f.key, "All"])));
   };
+
+  /* Grand total of the columns the picked period covers. */
+  const periodTotal = useMemo(() => {
+    if (!selectedMonths) return null;
+    const grand = phasingTable.find((r) => r.level === "total");
+    if (!grand) return null;
+    return sumBy([...selectedMonths], (i) => grand.months[i]);
+  }, [selectedMonths, phasingTable]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -1119,7 +1133,16 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
 
       <Panel
         title={`${chartTitle} (${measure.unit})`}
-        action={<Toggle options={["Monthly", "Quarterly"]} active={granularity} onChange={setGranularity} />}
+        action={
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            {periodSel && (
+              <span className="ro-chip">
+                {periodSel}: {measure.fmt(periodTotal)} {measure.unit}
+              </span>
+            )}
+            <Toggle options={["Monthly", "Quarterly"]} active={granularity} onChange={changeGranularity} />
+          </div>
+        }
       >
         <div className="ro-grid-2">
           <div style={{ width: "100%", height: 300 }}>
@@ -1130,7 +1153,17 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
                 <YAxis hide />
                 <Tooltip contentStyle={tooltipStyle} formatter={(v) => (v === null ? "—" : Number(v).toFixed(0))} cursor={{ fill: "rgba(0, 0, 0, 0.03)" }} />
                 <Legend wrapperStyle={{ fontSize: 12, fontFamily: FONT }} iconType="circle" iconSize={8} />
-                <Bar dataKey="fcst" name="Forecast" fill={BRAND.blue10} radius={[4, 4, 0, 0]}>
+                <Bar
+                  dataKey="fcst"
+                  name="Forecast"
+                  fill={BRAND.blue10}
+                  radius={[4, 4, 0, 0]}
+                  cursor="pointer"
+                  onClick={(d) => togglePeriod(d?.period ?? d?.payload?.period)}
+                >
+                  {chartData.map((d) => (
+                    <Cell key={d.period} fillOpacity={periodSel && periodSel !== d.period ? 0.3 : 1} />
+                  ))}
                   <LabelList
                     dataKey="fcst"
                     position="insideBottom"
@@ -1149,9 +1182,23 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
               <thead>
                 <tr>
                   <th style={{ ...thMin, textAlign: "left", padding: "8px 8px 8px 0" }}>LOB</th>
-                  {MONTHS.map((m) => (
-                    <th key={m} style={{ ...thMin, padding: "8px 4px" }}>{m}</th>
-                  ))}
+                  {MONTHS.map((m, i) => {
+                    const on = !selectedMonths || selectedMonths.has(i);
+                    return (
+                      <th
+                        key={m}
+                        style={{
+                          ...thMin,
+                          padding: "8px 4px",
+                          color: selectedMonths && on ? BRAND.blue10 : BRAND.mediumGray,
+                          background: selectedMonths && on ? "rgba(0, 94, 255, 0.08)" : undefined,
+                          opacity: on ? 1 : 0.4,
+                        }}
+                      >
+                        {m}
+                      </th>
+                    );
+                  })}
                   <th style={{ ...thMin, padding: "8px 0 8px 8px" }}>Total year</th>
                 </tr>
               </thead>
@@ -1184,11 +1231,23 @@ function PhasingView({ rows, lobs, subsForLob, measures, cutoffs, extraFilters, 
                         {canExpand && <span style={{ marginRight: 4, color: BRAND.mediumGray }}>{expanded[r.label] ? "−" : "+"}</span>}
                         {r.label}
                       </td>
-                      {r.months.map((v, i) => (
-                        <td key={i} style={{ padding: "7px 4px", textAlign: "right", color: v ? BRAND.black : UI.line }}>
-                          {v ? measure.fmt(v) : "—"}
-                        </td>
-                      ))}
+                      {r.months.map((v, i) => {
+                        const on = !selectedMonths || selectedMonths.has(i);
+                        return (
+                          <td
+                            key={i}
+                            style={{
+                              padding: "7px 4px",
+                              textAlign: "right",
+                              color: v ? BRAND.black : UI.line,
+                              background: selectedMonths && on ? "rgba(0, 94, 255, 0.08)" : undefined,
+                              opacity: on ? 1 : 0.35,
+                            }}
+                          >
+                            {v ? measure.fmt(v) : "—"}
+                          </td>
+                        );
+                      })}
                       <td style={{ padding: "7px 0 7px 8px", textAlign: "right", fontWeight: 700, color: BRAND.blue10 }}>
                         {measure.fmt(r.total)}
                       </td>
